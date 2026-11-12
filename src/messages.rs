@@ -627,6 +627,23 @@ pub struct DeployCompose {
     /// own `logging`, or Docker's default, applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_rotation: Option<LogRotation>,
+    /// The service also answers on a port of the host (see [`HostPort`]). Only for one replica:
+    /// two would ask for the same port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_port: Option<HostPort>,
+}
+
+/// A port of the host the service is published on, for a proxy that reaches it there instead of
+/// by its name on the shared network: one on the host network (an api-gateway in front of apps
+/// that listen on loopback), or any proxy when the service runs in a rootless daemon, whose
+/// container addresses the host cannot reach. Each blue-green slot gets a port of its own.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostPort {
+    /// The host address to bind (`127.0.0.1` keeps it off the network).
+    pub address: String,
+    pub port: u16,
+    /// The port the service listens on inside its container.
+    pub container_port: u16,
 }
 
 /// After a switch, keeps asking the replicas of the new version whether they
@@ -681,6 +698,9 @@ pub struct RollbackCompose {
     /// own `logging`, or Docker's default, applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_rotation: Option<LogRotation>,
+    /// See [`DeployCompose::host_port`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_port: Option<HostPort>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1124,6 +1144,11 @@ mod tests {
             log_rotation: Some(LogRotation {
                 max_size_mb: 10,
                 max_files: 3,
+            }),
+            host_port: Some(HostPort {
+                address: "127.0.0.1".into(),
+                port: 20001,
+                container_port: 3000,
             }),
         }
     }
@@ -1645,6 +1670,7 @@ mod tests {
                 network_aliases: Vec::new(),
                 project: None,
                 log_rotation: None,
+                host_port: None,
             }),
             CommandKind::StopService(StopService {
                 compose_dir: Some("/d".into()),
