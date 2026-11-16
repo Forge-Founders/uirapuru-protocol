@@ -582,6 +582,12 @@ pub struct DeployCompose {
     /// `secure` variables fetched by the agent straight from Ciphera.
     #[serde(default)]
     pub secrets: Option<SecretsSpec>,
+    /// The compose services a variable goes to, by name, when not only `service_name`: a variable
+    /// listed here is passed to exactly those services (`environment: [NAME]` in the override), one
+    /// not listed goes to `service_name` alone. Every value is in the environment of the
+    /// `docker compose` process either way, so `${NAME}` in the compose file works for any of them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env_targets: BTreeMap<String, Vec<String>>,
     pub replicas: Option<u32>,
     /// Extra Docker network the service joins (the shared one, so gateways can
     /// reach it by the names in [`crate::naming`]); the agent creates it.
@@ -686,6 +692,12 @@ pub struct RollbackCompose {
     pub env_plain: BTreeMap<String, String>,
     #[serde(default)]
     pub secrets: Option<SecretsSpec>,
+    /// The compose services a variable goes to, by name, when not only `service_name`: a variable
+    /// listed here is passed to exactly those services (`environment: [NAME]` in the override), one
+    /// not listed goes to `service_name` alone. Every value is in the environment of the
+    /// `docker compose` process either way, so `${NAME}` in the compose file works for any of them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env_targets: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub network: Option<String>,
     /// Names the service answers to on [`Self::network`], besides its own
@@ -726,6 +738,12 @@ pub struct Scale {
     pub env_plain: BTreeMap<String, String>,
     #[serde(default)]
     pub secrets: Option<SecretsSpec>,
+    /// The compose services a variable goes to, by name, when not only `service_name`: a variable
+    /// listed here is passed to exactly those services (`environment: [NAME]` in the override), one
+    /// not listed goes to `service_name` alone. Every value is in the environment of the
+    /// `docker compose` process either way, so `${NAME}` in the compose file works for any of them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env_targets: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub network: Option<String>,
     /// Names the service answers to on [`Self::network`], besides its own
@@ -1131,6 +1149,7 @@ mod tests {
             compose_dir: "/opt/uirapuru/services/acme/web".into(),
             env_plain: BTreeMap::from([("LOG_LEVEL".into(), "info".into())]),
             secrets: Some(secrets()),
+            env_targets: BTreeMap::new(),
             replicas: Some(3),
             network: Some("uirapuru".into()),
             network_aliases: vec!["backend.shop.interno".into()],
@@ -1151,6 +1170,28 @@ mod tests {
                 container_port: 3000,
             }),
         }
+    }
+
+    #[test]
+    fn variable_targets_travel_only_when_set() {
+        // Without targets the key is not sent: an agent from before them reads the same command.
+        let bytes = rmp_serde::to_vec_named(&deploy()).unwrap();
+        assert!(!bytes.windows(11).any(|w| w == b"env_targets"));
+        let back: DeployCompose = rmp_serde::from_slice(&bytes).unwrap();
+        assert!(back.env_targets.is_empty());
+
+        let targeted = DeployCompose {
+            env_targets: BTreeMap::from([(
+                "DATABASE_URL".into(),
+                vec!["api".into(), "migrate".into()],
+            )]),
+            ..deploy()
+        };
+        let bytes = rmp_serde::to_vec_named(&targeted).unwrap();
+        assert_eq!(
+            rmp_serde::from_slice::<DeployCompose>(&bytes).unwrap(),
+            targeted
+        );
     }
 
     #[test]
@@ -1427,6 +1468,7 @@ mod tests {
                     replicas: 3,
                     env_plain: BTreeMap::new(),
                     secrets: Some(secrets()),
+                    env_targets: BTreeMap::new(),
                     network: None,
                     network_aliases: Vec::new(),
                     project: None,
@@ -1666,6 +1708,7 @@ mod tests {
                 compose_dir: "/d".into(),
                 env_plain: BTreeMap::from([("A".into(), "1".into())]),
                 secrets: Some(secrets()),
+                env_targets: BTreeMap::new(),
                 network: None,
                 network_aliases: Vec::new(),
                 project: None,
@@ -1684,6 +1727,7 @@ mod tests {
                 replicas: 2,
                 env_plain: BTreeMap::new(),
                 secrets: None,
+                env_targets: BTreeMap::new(),
                 network: None,
                 network_aliases: Vec::new(),
                 project: None,
