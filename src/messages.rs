@@ -818,6 +818,62 @@ pub struct RunBackup {
     pub container_name: String,
 }
 
+/// Administrative steps on a shared data plane (PostgreSQL, Valkey, NATS) that runs on the agent's
+/// own server. The hub renders every statement; the agent only runs them with `docker exec` as the
+/// container's local administrator, so no administrator credential leaves the server. Steps run in
+/// order and stop at the first failure. The answer is a [`SharedAdminReport`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SharedAdmin {
+    pub steps: Vec<SharedStep>,
+    /// Tenant passwords the steps refer to by [`SecureVar::name`], fetched by the agent straight
+    /// from Ciphera. Values must be alphanumeric (the hub derives them as hex) and are only ever
+    /// given to the tools through stdin, never as process arguments.
+    #[serde(default)]
+    pub secrets: Option<SecretsSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "step", rename_all = "snake_case")]
+pub enum SharedStep {
+    /// A `psql` script on stdin (`ON_ERROR_STOP`). Each secret is defined first as a psql
+    /// variable (`\set NAME 'value'`); the script uses it as `:'NAME'`.
+    Psql {
+        container: String,
+        user: String,
+        database: String,
+        script: String,
+        /// Return the script's output (tuples only, unaligned) in the report.
+        #[serde(default)]
+        capture: bool,
+    },
+    /// `valkey-cli` commands on stdin as the administrator user, whose password is read from the
+    /// container's own environment variable `password_env`. An argument may contain `${NAME}`
+    /// for a secret (e.g. `>${NAME}`).
+    Valkey {
+        container: String,
+        user: String,
+        password_env: String,
+        commands: Vec<Vec<String>>,
+        #[serde(default)]
+        capture: bool,
+    },
+    /// Replaces `file` inside the NATS container with `content`, checks the whole configuration
+    /// (`nats-server -t -c config`) and reloads the server (SIGHUP). On any failure the previous
+    /// file is put back.
+    NatsConfig {
+        container: String,
+        file: String,
+        config: String,
+        content: String,
+    },
+}
+
+/// Output of each [`SharedStep`], in order (empty when the step did not capture).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SharedAdminReport {
+    pub outputs: Vec<String>,
+}
+
 /// Restores a `pg_dump -Fc` file into a resource's database (moving a server, item 24 of the
 /// hub). The file is named, not given by path: it must be in the agent's backups directory,
 /// where the person copied it.
@@ -1040,6 +1096,8 @@ pub enum CommandKind {
     ExportVolume(ExportVolume),
     ImportVolume(ImportVolume),
     UpgradeComponent(Box<UpgradeComponent>),
+    /// The answer is a [`SharedAdminReport`].
+    SharedAdmin(Box<SharedAdmin>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1757,6 +1815,31 @@ mod tests {
                 backup_type: "pg_dump".into(),
                 container_name: "resource_db".into(),
             }),
+            CommandKind::SharedAdmin(Box::new(SharedAdmin {
+                steps: vec![
+                    SharedStep::Psql {
+                        container: "uirapuru-shared-postgres".into(),
+                        user: "uirapuru-shared-admin".into(),
+                        database: "postgres".into(),
+                        script: "SELECT 1".into(),
+                        capture: true,
+                    },
+                    SharedStep::Valkey {
+                        container: "uirapuru-shared-valkey".into(),
+                        user: "hub-admin".into(),
+                        password_env: "SHARED_VALKEY_ADMIN_PASSWORD".into(),
+                        commands: vec![vec!["ACL".into(), "SAVE".into()]],
+                        capture: false,
+                    },
+                    SharedStep::NatsConfig {
+                        container: "uirapuru-shared-nats".into(),
+                        file: "/etc/nats-config/accounts.conf".into(),
+                        config: "/etc/nats/nats.conf".into(),
+                        content: "accounts: {}".into(),
+                    },
+                ],
+                secrets: None,
+            })),
             CommandKind::RestoreBackup(RestoreBackup {
                 resource_id: id(),
                 container_name: "resource_db".into(),
